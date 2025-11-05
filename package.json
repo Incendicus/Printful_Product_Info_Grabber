@@ -1,0 +1,14 @@
+{
+  "name": "printful-product-info-grabber",
+  "version": "1.0.0",
+  "description": "AWS Lambda to fetch Printful mockup styles and blank images by variant ID",
+  "main": "src/handler.js",
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.515.0",
+    "axios": "^1.6.7"
+  }
+}
