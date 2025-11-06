@@ -1,4 +1,4 @@
-name: Package AWS Lambda (Node)
+name: Package AWS Lambda (Node ESM)
 
 on:
   push:
@@ -6,12 +6,9 @@ on:
   workflow_dispatch:
 
 env:
-  # If your Lambda function lives in a subfolder, change this.
   APP_DIR: .
-  # If your build emits compiled output (e.g. TypeScript -> dist), set this to that folder.
-  BUILD_OUT: dist
   ZIP_NAME: lambda.zip
-  NODE_VERSION: '20'   # or '20' if your Lambda runtime is Node.js 20.x
+  NODE_VERSION: '20'   # Match your Lambda runtime (Node.js 20.x recommended)
 
 jobs:
   build-and-zip:
@@ -28,26 +25,73 @@ jobs:
           cache: 'npm'
           cache-dependency-path: ${{ env.APP_DIR }}/package-lock.json
 
-      - name: Install deps (for build) and build
+      - name: Install deps and optional build
         working-directory: ${{ env.APP_DIR }}
-        run: |
-          npm ci
-          npm run build
-
-      # Create a clean staging folder that will mirror the zip root
-      - name: Stage runtime files
         shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund
+          else
+            npm install --no-audit --no-fund
+          fi
+
+          # Run build only if it exists
+          if npm run -s | grep -qE '^  build'; then
+            npm run build
+          else
+            echo "::notice::No build script; skipping"
+          fi
+
+      - name: Stage runtime files (no nesting)
         working-directory: ${{ env.APP_DIR }}
+        shell: bash
         run: |
           set -euo pipefail
           rm -rf package
           mkdir -p package
 
-          # If a build output folder exists, we ship that; otherwise ship sources.
-          if [ -d "${BUILD_OUT}" ] && [ "$(ls -A ${BUILD_OUT})" ]; then
-            rsync -a --delete "${BUILD_OUT}/" "package/"
-          else
-            # Ship source files except obvious junk
-            rsync -a --delete \
-              --exclude ".git/" \
-              --exclude ".github/" \
+          # Ship only what Lambda needs
+          rsync -a \
+            --include "index.mjs" \
+            --include "src/***" \
+            --include "package.json" \
+            --include "package-lock.json" \
+            --exclude ".git/***" \
+            --exclude ".github/***" \
+            --exclude "tests/***" \
+            --exclude "test/***" \
+            --exclude "coverage/***" \
+            --exclude "node_modules/***" \
+            --exclude "*.log" \
+            --exclude "README.md" \
+            --exclude ".gitignore" \
+            ./ package/
+
+          # Install production deps inside the staged folder
+          if [ -f package/package.json ]; then
+            pushd package >/dev/null
+            if [ -f package-lock.json ]; then
+              npm ci --omit=dev --no-audit --no-fund
+            else
+              npm install --omit=dev --no-audit --no-fund
+            fi
+            popd >/dev/null
+          fi
+
+          echo "Top-level staged files:"
+          ls -la package | sed -n '1,200p'
+
+      - name: Create Lambda zip (flat root)
+        working-directory: ${{ env.APP_DIR }}/package
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Zip the CONTENTS so the root of the zip is files, not a folder
+          zip -r "../${ZIP_NAME}" . -q
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_NAME }}
+          path: ${{ env.APP_DIR }}/${{ env.ZIP_NA
