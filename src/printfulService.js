@@ -1,5 +1,19 @@
 const { info, debug, overkill } = require('./logger');
 
+const firstDefined = (...values) => {
+  for (const value of values) {
+    if (value !== undefined && value !== null && value !== '') {
+      return value;
+    }
+  }
+  return undefined;
+};
+
+const toNumberOrNull = (value) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+};
+
 const flattenPlacements = (stylePlacements = [], placementLookup = {}) => {
   if (!Array.isArray(stylePlacements) || stylePlacements.length === 0) {
     return [];

@@ -78,6 +78,10 @@ class PrintfulClient {
     return this.request({ method: 'GET', path: `/v2/store-variants/${variantId}` });
   }
 
+  getLegacyVariant(variantId) {
+    return this.request({ method: 'GET', path: `/v1/products/variant/${variantId}` });
+  }
+
   getMockupTemplates(productId) {
     return this.request({ method: 'GET', path: `/v2/mockup-generator/templates/${productId}` });
   }
