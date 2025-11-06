@@ -1,31 +1,46 @@
-name: Clean install prod deps
-  run:
-    rm -rf node_modules
-    npm ci --omit=dev
+name: Build Lambda ZIP
 
-# If you bundle to dist/, do it here
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
 
-- name: Stage files exactly as ZIP root
-  run: |
-    rm -rf bundle
-    mkdir bundle
-    # Copy ONLY what Lambda needs
-    cp package.json bundle/ || true
-    cp index.js bundle/ 2>/dev/null || true
-    cp -R dist bundle/dist 2>/dev/null || true
-    cp -R src bundle/src 2>/dev/null || true
-    cp -R node_modules bundle/node_modules
-    # Sanity check
-    ls -la bundle
-    test -f bundle/index.js -o -f bundle/dist/handler.js
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-- name: Create ZIP from inside the bundle (no parent folder)
-  run: |
-    cd bundle
-    zip -r ../function.zip . -x "*.test.*" "node_modules/.bin/*"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
 
-- name: Upload artifact
-  uses: actions/upload-artifact@v4
-  with:
-    name: lambda-zip
-    path: function.zip
+      - name: Clean install prod deps
+        run: |
+          rm -rf node_modules
+          npm ci --omit=dev
+
+      # If you bundle (TS/ESM), do it here. Otherwise skip.
+
+      - name: Stage Lambda payload (ZIP root)
+        run: |
+          rm -rf bundle
+          mkdir bundle
+          cp package.json bundle/ || true
+          cp index.js bundle/ 2>/dev/null || true
+          cp -R dist bundle/dist 2>/dev/null || true
+          cp -R node_modules bundle/node_modules
+          ls -la bundle
+
+      - name: Create ZIP
+        run: |
+          cd bundle
+          zip -r ../function.zip . -x "*.test.*" "node_modules/.bin/*"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lambda-zip
+          path: function.zip
+          if-no-files-found: error
