@@ -77,11 +77,24 @@ const parseVariantResponse = (variantResponse) => {
   }
 
   const product = variant.product || variant.catalog_product || {};
+  const syncProduct = variant.sync_product || {};
+  const catalogProduct = variant.catalog_product || syncProduct.catalog_product || {};
 
   return {
-    variantId: variant.id || variant.variant_id || variantResponse?.id,
-    productId: variant.product_id || product.id || product.product_id,
-    product,
+    variantId:
+      variant.id ||
+      variant.variant_id ||
+      variant.sync_variant_id ||
+      variantResponse?.id,
+    productId:
+      variant.product_id ||
+      product.id ||
+      product.product_id ||
+      catalogProduct.id ||
+      catalogProduct.product_id ||
+      syncProduct.product_id ||
+      variant.sync_product_id,
+    product: Object.keys(product).length ? product : catalogProduct,
     variant
   };
 };
