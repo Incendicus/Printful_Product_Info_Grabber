@@ -1,48 +1,53 @@
-name: Build Lambda ZIP
+name: Package AWS Lambda (Node)
 
 on:
-  workflow_dispatch:
   push:
-    branches: ["main"]
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  # If your Lambda function lives in a subfolder, change this.
+  APP_DIR: .
+  # If your build emits compiled output (e.g. TypeScript -> dist), set this to that folder.
+  BUILD_OUT: dist
+  ZIP_NAME: lambda.zip
+  NODE_VERSION: '20'   # or '20' if your Lambda runtime is Node.js 20.x
 
 jobs:
-  build:
+  build-and-zip:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
-          node-version: "20"
-          cache: "npm"
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: ${{ env.APP_DIR }}/package-lock.json
 
-      - name: Clean install prod deps
+      - name: Install deps (for build) and build
+        working-directory: ${{ env.APP_DIR }}
         run: |
-          rm -rf node_modules
-          npm ci --omit=dev
+          npm ci
+          npm run build
 
-      # If you bundle to dist/, do it here.
-      # - name: Bundle
-      #   run: npx esbuild src/handler.ts --bundle --platform=node --target=node20 --outfile=dist/handler.js --external:aws-sdk
-
-      - name: Stage Lambda payload (ZIP root)
+      # Create a clean staging folder that will mirror the zip root
+      - name: Stage runtime files
+        shell: bash
+        working-directory: ${{ env.APP_DIR }}
         run: |
-          rm -rf bundle
-          mkdir bundle
-          cp package.json bundle/ || true
-          cp index.js bundle/ 2>/dev/null || true
-          cp -R dist bundle/dist 2>/dev/null || true
-          cp -R node_modules bundle/node_modules
-          ls -la bundle
+          set -euo pipefail
+          rm -rf package
+          mkdir -p package
 
-      - name: Create ZIP (zip the CONTENTS, not the folder name)
-        run: |
-          cd bundle
-          zip -r ../function.zip . -x "*.test.*" "node_modules/.bin/*"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: lambda-zip
-          path: function.zip
-          if-no-files-found: error
+          # If a build output folder exists, we ship that; otherwise ship sources.
+          if [ -d "${BUILD_OUT}" ] && [ "$(ls -A ${BUILD_OUT})" ]; then
+            rsync -a --delete "${BUILD_OUT}/" "package/"
+          else
+            # Ship source files except obvious junk
+            rsync -a --delete \
+              --exclude ".git/" \
+              --exclude ".github/" \
