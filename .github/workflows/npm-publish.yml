@@ -1,48 +1,103 @@
-name: Build Lambda ZIP
+name: Package AWS Lambda (Node ESM)
 
 on:
-  workflow_dispatch:
   push:
-    branches: ["main"]
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  APP_DIR: .
+  ZIP_NAME: lambda.zip
+  NODE_VERSION: '20'   # Match your Lambda runtime (Node.js 20.x recommended)
 
 jobs:
-  build:
+  build-and-zip:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
-          node-version: "20"
-          cache: "npm"
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: ${{ env.APP_DIR }}/package-lock.json
 
-      - name: Clean install prod deps
+      - name: Install deps and optional build
+        working-directory: ${{ env.APP_DIR }}
+        shell: bash
+        env:
+          CI: "true"
         run: |
-          rm -rf node_modules
-          npm ci --omit=dev
+          set -euo pipefail
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund
+          else
+            npm install --no-audit --no-fund
+          fi
 
-      # If you bundle (TS/ESM), do it here. Otherwise skip.
+          # Run build only if it exists
+          if npm run -s | grep -qE '^  build'; then
+            npm run build
+          else
+            echo "::notice::No build script; skipping"
+          fi
 
-      - name: Stage Lambda payload (ZIP root)
+      - name: Stage runtime files (no nesting)
+        working-directory: ${{ env.APP_DIR }}
+        shell: bash
         run: |
-          rm -rf bundle
-          mkdir bundle
-          cp package.json bundle/ || true
-          cp index.mjs bundle/ 2>/dev/null || true
-          cp index.js bundle/ 2>/dev/null || true
-          cp -R src bundle/src 2>/dev/null || true
-          cp -R dist bundle/dist 2>/dev/null || true
-          cp -R node_modules bundle/node_modules
-          ls -la bundle
+          set -euo pipefail
+          rm -rf package
+          mkdir -p package
 
-      - name: Create ZIP
+          # Ship only what Lambda needs
+          rsync -a \
+            --include "index.mjs" \
+            --include "src/***" \
+            --include "package.json" \
+            --include "package-lock.json" \
+            --exclude ".git/***" \
+            --exclude ".github/***" \
+            --exclude "tests/***" \
+            --exclude "test/***" \
+            --exclude "coverage/***" \
+            --exclude "node_modules/***" \
+            --exclude "*.log" \
+            --exclude "README.md" \
+            --exclude ".gitignore" \
+            ./ package/
+
+          # Install production deps inside the staged folder
+          if [ -f package/package.json ]; then
+            ( cd package
+              if [ -f package-lock.json ]; then
+                npm ci --omit=dev --no-audit --no-fund
+              else
+                npm install --omit=dev --no-audit --no-fund
+              fi
+            )
+          fi
+
+          echo "Top-level staged files:"
+          ls -la package | sed -n '1,200p'
+
+      - name: Create Lambda zip (flat root)
+        working-directory: ${{ env.APP_DIR }}/package
+        shell: bash
+        env:
+          ZIP_NAME: ${{ env.ZIP_NAME }}
         run: |
-          cd bundle
-          zip -r ../function.zip . -x "*.test.*" "node_modules/.bin/*"
+          set -euo pipefail
+          # Zip the CONTENTS so the root of the zip is files, not a folder
+          zip -r "../${ZIP_NAME}" . -q
+          echo "Created ../${ZIP_NAME}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: lambda-zip
-          path: function.zip
+          name: ${{ env.ZIP_NAME }}
+          path: ${{ env.APP_DIR }}/${{ env.ZIP_NAME }}
           if-no-files-found: error
