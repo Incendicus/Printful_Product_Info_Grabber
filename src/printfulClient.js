@@ -74,6 +74,10 @@ class PrintfulClient {
     return this.request({ method: 'GET', path: `/v2/catalog/variant/${variantId}` });
   }
 
+  getStoreVariant(variantId) {
+    return this.request({ method: 'GET', path: `/v2/store-variants/${variantId}` });
+  }
+
   getMockupTemplates(productId) {
     return this.request({ method: 'GET', path: `/v2/mockup-generator/templates/${productId}` });
   }

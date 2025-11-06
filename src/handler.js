@@ -150,7 +150,18 @@ exports.handler = async (event) => {
     const client = new PrintfulClient({ apiKey, rateLimitMs: RATE_LIMIT_MS });
     const uploader = new S3Uploader({ bucket });
 
-    const variantResponse = await client.getCatalogVariant(variantId);
+    let variantResponse;
+    try {
+      variantResponse = await client.getCatalogVariant(variantId);
+    } catch (err) {
+      if (err?.response?.status === 404) {
+        info(`Catalog variant ${variantId} not found, attempting store variant lookup`);
+        variantResponse = await client.getStoreVariant(variantId);
+      } else {
+        throw err;
+      }
+    }
+
     const variant = parseVariantResponse(variantResponse);
     debug('Variant payload parsed', variant);
 
