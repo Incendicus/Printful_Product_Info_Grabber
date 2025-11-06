@@ -28,7 +28,9 @@ jobs:
           rm -rf bundle
           mkdir bundle
           cp package.json bundle/ || true
+          cp index.mjs bundle/ 2>/dev/null || true
           cp index.js bundle/ 2>/dev/null || true
+          cp -R src bundle/src 2>/dev/null || true
           cp -R dist bundle/dist 2>/dev/null || true
           cp -R node_modules bundle/node_modules
           ls -la bundle
