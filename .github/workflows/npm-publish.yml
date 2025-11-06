@@ -1,0 +1,36 @@
+name: Build Lambda ZIP
+on: [workflow_dispatch, push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install production deps
+        run: |
+          rm -rf node_modules
+          npm ci --omit=dev
+
+      # Optional: bundle TS/ESM with esbuild and keep deps external as needed
+      # - run: npx esbuild src/handler.ts --bundle --platform=node --target=node20 --outfile=dist/handler.js --external:aws-sdk
+
+      - name: Create ZIP (rooted correctly)
+        run: |
+          mkdir -p package
+          cp -R package.json index.js src dist lib node_modules package 2>/dev/null || true
+          cd package
+          zip -r ../function.zip . -x "*.test.*" "node_modules/.bin/*"
+          cd ..
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lambda-zip
+          path: function.zip
+          if-no-files-found: error
