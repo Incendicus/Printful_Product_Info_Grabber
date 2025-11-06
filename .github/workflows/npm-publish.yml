@@ -1,5 +1,5 @@
-- name: Clean install prod deps
-  run: |
+name: Clean install prod deps
+  run:
     rm -rf node_modules
     npm ci --omit=dev
 
