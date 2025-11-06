@@ -78,6 +78,10 @@ class PrintfulClient {
     return this.request({ method: 'GET', path: `/v2/store-variants/${variantId}` });
   }
 
+  getLegacyVariant(variantId) {
+    return this.request({ method: 'GET', path: `/v1/products/variant/${variantId}` });
+  }
+
   getMockupTemplates(productId) {
     return this.request({ method: 'GET', path: `/v2/mockup-generator/templates/${productId}` });
   }
@@ -88,6 +92,19 @@ class PrintfulClient {
 
   getMockupStyles(productId) {
     return this.request({ method: 'GET', path: `/v2/mockup-generator/styles/${productId}` });
+  }
+
+  listCatalogVariants(productId, { limit = 100, offset = 0 } = {}) {
+    if (!productId) {
+      throw new Error('Product ID is required to list catalog variants');
+    }
+
+    const params = { limit, offset };
+    return this.request({
+      method: 'GET',
+      path: `/v2/catalog-products/${productId}/catalog-variants`,
+      params
+    });
   }
 
   createMockupTask(productId, payload) {

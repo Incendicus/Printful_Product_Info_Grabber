@@ -1,5 +1,19 @@
 const { info, debug, overkill } = require('./logger');
 
+const firstDefined = (...values) => {
+  for (const value of values) {
+    if (value !== undefined && value !== null && value !== '') {
+      return value;
+    }
+  }
+  return undefined;
+};
+
+const toNumberOrNull = (value) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+};
+
 const flattenPlacements = (stylePlacements = [], placementLookup = {}) => {
   if (!Array.isArray(stylePlacements) || stylePlacements.length === 0) {
     return [];
@@ -70,6 +84,215 @@ const enrichWithPlacements = (templateResponse, printfilesResponse) => {
     .filter((template) => template.styleId);
 };
 
+const toArray = (value) => (Array.isArray(value) ? value : []);
+
+const extractCatalogVariants = (response) => {
+  if (!response || typeof response !== 'object') {
+    return [];
+  }
+
+  const candidates = [
+    response.data,
+    response.result?.data,
+    response.result?.variants,
+    response.result?.items,
+    response.result,
+    response.variants,
+    response.items
+  ];
+
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) {
+      return candidate;
+    }
+    if (candidate && typeof candidate === 'object') {
+      if (Array.isArray(candidate.items)) {
+        return candidate.items;
+      }
+      if (Array.isArray(candidate.data)) {
+        return candidate.data;
+      }
+    }
+  }
+
+  return [];
+};
+
+const normalizeColor = (value) => String(value || '').trim().toLowerCase();
+const normalizeSize = (value) => String(value || '').trim().toUpperCase();
+
+const listAllCatalogVariants = async ({ client, productId, limit = 100 }) => {
+  const variants = [];
+  let offset = 0;
+
+  while (true) {
+    const page = await client.listCatalogVariants(productId, { limit, offset });
+    const entries = extractCatalogVariants(page);
+    if (!entries.length) {
+      break;
+    }
+    variants.push(...entries);
+
+    if (entries.length < limit) {
+      break;
+    }
+
+    offset += limit;
+  }
+
+  return variants;
+};
+
+const candidateColorNames = (variant) => {
+  const values = [
+    variant.color,
+    variant.color_name,
+    variant.colorName,
+    variant.color_code,
+    variant.colorCode,
+    variant.variant_color,
+    variant.options?.color
+  ];
+  return values.map((value) => normalizeColor(value)).filter(Boolean);
+};
+
+const candidateSize = (variant) =>
+  normalizeSize(
+    variant.size || variant.size_name || variant.sizeName || variant.size_label || variant.variant_size || variant.options?.size
+  );
+
+const unique = (values) => Array.from(new Set(values));
+
+const findCatalogVariantByAttributes = async ({ client, productId, colorName, size }) => {
+  const normalizedSize = normalizeSize(size);
+  const normalizedColor = normalizeColor(colorName);
+
+  const allVariants = await listAllCatalogVariants({ client, productId });
+  info(`Retrieved ${allVariants.length} catalog variants for product ${productId}`);
+
+  if (!allVariants.length) {
+    throw new Error(`No catalog variants found for product ${productId}`);
+  }
+
+  const matches = allVariants.filter((variant) => {
+    if (normalizedSize && candidateSize(variant) !== normalizedSize) {
+      return false;
+    }
+
+    if (!normalizedColor) {
+      return true;
+    }
+
+    const colors = candidateColorNames(variant);
+    return colors.some((color) => color.includes(normalizedColor));
+  });
+
+  if (!matches.length) {
+    const availableColors = unique(
+      allVariants
+        .filter((variant) => !normalizedSize || candidateSize(variant) === normalizedSize)
+        .map((variant) => variant.color || variant.color_name || variant.colorName)
+        .filter(Boolean)
+    );
+
+    throw new Error(
+      `No catalog variant found for product ${productId} matching color "${colorName}" and size "${size}". ` +
+        (availableColors.length ? `Available colors for size "${size}": ${availableColors.join(', ')}` : '')
+    );
+  }
+
+  const match = matches[0];
+  const catalogVariantId =
+    match.id || match.catalog_variant_id || match.catalogVariantId || match.variant_id || match.catalog_variantId;
+
+  if (!catalogVariantId) {
+    throw new Error(
+      `Catalog variant record missing identifier for product ${productId}, color "${colorName}" and size "${size}"`
+    );
+  }
+
+  debug('Resolved catalog variant from attributes', {
+    productId,
+    colorName,
+    size,
+    catalogVariantId,
+    match
+  });
+
+  return {
+    catalogVariantId,
+    variant: match,
+    matches: toArray(matches)
+  };
+};
+
+const parseLegacyVariantResponse = (legacyResponse) => {
+  if (!legacyResponse || typeof legacyResponse !== 'object') {
+    return null;
+  }
+
+  const payload = legacyResponse.result || legacyResponse.data || legacyResponse;
+  if (!payload || typeof payload !== 'object') {
+    return null;
+  }
+
+  const legacyVariant =
+    payload.variant || payload.sync_variant || payload.syncVariant || payload.result?.variant;
+  const syncVariant = payload.sync_variant || payload.syncVariant;
+  const product = payload.product || payload.sync_product || payload.syncProduct;
+
+  const catalogVariantId = toNumberOrNull(
+    firstDefined(
+      legacyVariant?.catalog_variant_id,
+      legacyVariant?.catalogVariantId,
+      syncVariant?.catalog_variant_id,
+      syncVariant?.catalogVariantId
+    )
+  );
+
+  const productId = toNumberOrNull(
+    firstDefined(
+      legacyVariant?.catalog_product_id,
+      legacyVariant?.product_id,
+      product?.catalog_product_id,
+      product?.product_id,
+      product?.id,
+      syncVariant?.catalog_product_id
+    )
+  );
+
+  const colorName = firstDefined(
+    legacyVariant?.color,
+    legacyVariant?.color_name,
+    syncVariant?.color,
+    product?.color
+  );
+
+  const size = firstDefined(legacyVariant?.size, syncVariant?.size);
+
+  const legacyVariantId = toNumberOrNull(
+    firstDefined(legacyVariant?.id, legacyResponse?.id, payload?.id)
+  );
+
+  if (
+    catalogVariantId === null &&
+    productId === null &&
+    !colorName &&
+    !size &&
+    legacyVariantId === null
+  ) {
+    return null;
+  }
+
+  return {
+    legacyVariantId,
+    catalogVariantId,
+    productId,
+    colorName,
+    size
+  };
+};
+
 const parseVariantResponse = (variantResponse) => {
   const variant = variantResponse?.result || variantResponse?.data || variantResponse;
   if (!variant) {
@@ -125,5 +348,7 @@ const pollMockupTask = async ({ client, taskKey, timeoutMs = 120_000, intervalMs
 module.exports = {
   enrichWithPlacements,
   parseVariantResponse,
-  pollMockupTask
+  pollMockupTask,
+  findCatalogVariantByAttributes,
+  parseLegacyVariantResponse
 };
