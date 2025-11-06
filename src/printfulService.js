@@ -14,6 +14,69 @@ const toNumberOrNull = (value) => {
   return Number.isFinite(number) ? number : null;
 };
 
+const parseLegacyVariantResponse = (legacyResponse) => {
+  const result = legacyResponse?.result || legacyResponse || {};
+  const variant = result.variant || legacyResponse?.variant;
+
+  if (!variant) {
+    throw new Error('Legacy variant response missing "variant" payload');
+  }
+
+  const product = result.product || legacyResponse?.product || {};
+  const syncVariant = result.sync_variant || legacyResponse?.sync_variant || {};
+  const syncProduct = result.sync_product || legacyResponse?.sync_product || {};
+
+  const legacyVariantId =
+    toNumberOrNull(
+      firstDefined(
+        variant.id,
+        variant.variant_id,
+        variant.variantId,
+        syncVariant.id,
+        syncVariant.variant_id
+      )
+    );
+
+  if (legacyVariantId === null) {
+    throw new Error('Legacy variant response missing identifier');
+  }
+
+  const catalogVariantId =
+    toNumberOrNull(
+      firstDefined(
+        variant.catalog_variant_id,
+        variant.catalogVariantId,
+        variant.catalog_variantId,
+        syncVariant.catalog_variant_id,
+        syncVariant.variant_id
+      )
+    );
+
+  const productId =
+    toNumberOrNull(
+      firstDefined(
+        variant.catalog_product_id,
+        variant.product_id,
+        product.catalog_product_id,
+        product.id,
+        product.product_id,
+        syncProduct.catalog_product_id,
+        syncProduct.product_id
+      )
+    );
+
+  const colorName = firstDefined(variant.color, variant.color_name, variant.colorName);
+  const size = firstDefined(variant.size, variant.size_name, variant.sizeName, variant.size_label);
+
+  return {
+    legacyVariantId,
+    catalogVariantId,
+    productId,
+    colorName,
+    size
+  };
+};
+
 const flattenPlacements = (stylePlacements = [], placementLookup = {}) => {
   if (!Array.isArray(stylePlacements) || stylePlacements.length === 0) {
     return [];
@@ -227,30 +290,39 @@ const findCatalogVariantByAttributes = async ({ client, productId, colorName, si
 };
 
 const parseVariantResponse = (variantResponse) => {
-  const variant = variantResponse?.result || variantResponse?.data || variantResponse;
-  if (!variant) {
-    throw new Error('Variant response missing "result" payload');
+  const variant = variantResponse?.data;
+
+  if (!variant || typeof variant !== 'object') {
+    throw new Error('Variant response missing "data" payload');
   }
 
-  const product = variant.product || variant.catalog_product || {};
-  const syncProduct = variant.sync_product || {};
-  const catalogProduct = variant.catalog_product || syncProduct.catalog_product || {};
+  const variantId = variant.id ?? variant.variant_id ?? variant.sync_variant_id;
+  if (!variantId) {
+    throw new Error('Variant response missing variant identifier');
+  }
+
+  const product =
+    variant.catalog_product ||
+    variant.product ||
+    variant.sync_product ||
+    {};
+
+  const productId =
+    product.id ??
+    product.product_id ??
+    product.sync_product_id ??
+    variant.catalog_product_id ??
+    variant.product_id ??
+    variant.sync_product_id;
+
+  if (!productId) {
+    throw new Error(`Variant ${variantId} response missing product identifier`);
+  }
 
   return {
-    variantId:
-      variant.id ||
-      variant.variant_id ||
-      variant.sync_variant_id ||
-      variantResponse?.id,
-    productId:
-      variant.product_id ||
-      product.id ||
-      product.product_id ||
-      catalogProduct.id ||
-      catalogProduct.product_id ||
-      syncProduct.product_id ||
-      variant.sync_product_id,
-    product: Object.keys(product).length ? product : catalogProduct,
+    variantId,
+    productId,
+    product,
     variant
   };
 };
@@ -280,6 +352,7 @@ const pollMockupTask = async ({ client, taskKey, timeoutMs = 120_000, intervalMs
 
 module.exports = {
   enrichWithPlacements,
+  parseLegacyVariantResponse,
   parseVariantResponse,
   pollMockupTask,
   findCatalogVariantByAttributes

@@ -71,7 +71,7 @@ class PrintfulClient {
   }
 
   getCatalogVariant(variantId) {
-    return this.request({ method: 'GET', path: `/v2/catalog/variant/${variantId}` });
+    return this.request({ method: 'GET', path: `/v2/catalog-variants/${variantId}` });
   }
 
   getStoreVariant(variantId) {
