@@ -21,21 +21,21 @@ jobs:
           rm -rf node_modules
           npm ci --omit=dev
 
-      # If you bundle (TS/ESM), do it here. Otherwise skip.
+      # If you bundle to dist/, do it here.
+      # - name: Bundle
+      #   run: npx esbuild src/handler.ts --bundle --platform=node --target=node20 --outfile=dist/handler.js --external:aws-sdk
 
       - name: Stage Lambda payload (ZIP root)
         run: |
           rm -rf bundle
           mkdir bundle
           cp package.json bundle/ || true
-          cp index.mjs bundle/ 2>/dev/null || true
           cp index.js bundle/ 2>/dev/null || true
-          cp -R src bundle/src 2>/dev/null || true
           cp -R dist bundle/dist 2>/dev/null || true
           cp -R node_modules bundle/node_modules
           ls -la bundle
 
-      - name: Create ZIP
+      - name: Create ZIP (zip the CONTENTS, not the folder name)
         run: |
           cd bundle
           zip -r ../function.zip . -x "*.test.*" "node_modules/.bin/*"
