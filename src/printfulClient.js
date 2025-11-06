@@ -90,6 +90,19 @@ class PrintfulClient {
     return this.request({ method: 'GET', path: `/v2/mockup-generator/styles/${productId}` });
   }
 
+  listCatalogVariants(productId, { limit = 100, offset = 0 } = {}) {
+    if (!productId) {
+      throw new Error('Product ID is required to list catalog variants');
+    }
+
+    const params = { limit, offset };
+    return this.request({
+      method: 'GET',
+      path: `/v2/catalog-products/${productId}/catalog-variants`,
+      params
+    });
+  }
+
   createMockupTask(productId, payload) {
     return this.request({ method: 'POST', path: `/v2/mockup-generator/create-task/${productId}`, data: payload });
   }

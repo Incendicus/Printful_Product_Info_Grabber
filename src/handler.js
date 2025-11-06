@@ -1,6 +1,11 @@
 const PrintfulClient = require('./printfulClient');
 const { info, warn, error, debug } = require('./logger');
-const { enrichWithPlacements, parseVariantResponse, pollMockupTask } = require('./printfulService');
+const {
+  enrichWithPlacements,
+  parseVariantResponse,
+  pollMockupTask,
+  findCatalogVariantByAttributes
+} = require('./printfulService');
 const S3Uploader = require('./s3Uploader');
 
 const RATE_LIMIT_MS = 3_000;
@@ -10,30 +15,70 @@ const parseEvent = (event) => {
     throw new Error('Event payload is required');
   }
 
-  if (event.variantId) {
-    return String(event.variantId);
-  }
+  const details = {
+    variantId: null,
+    productId: null,
+    colorName: null,
+    size: null
+  };
 
-  if (event.pathParameters?.variantId) {
-    return String(event.pathParameters.variantId);
-  }
+  const applySource = (source) => {
+    if (!source || typeof source !== 'object') {
+      return;
+    }
 
-  if (event.queryStringParameters?.variantId) {
-    return String(event.queryStringParameters.variantId);
-  }
+    if (!details.variantId) {
+      const variantId = source.variantId || source.catalogVariantId || source.syncVariantId;
+      if (variantId !== undefined && variantId !== null) {
+        details.variantId = String(variantId);
+      }
+    }
+
+    if (!details.productId) {
+      const productId = source.productId || source.catalogProductId;
+      if (productId !== undefined && productId !== null) {
+        details.productId = String(productId);
+      }
+    }
+
+    if (!details.colorName) {
+      const color =
+        source.colorName ||
+        source.color ||
+        source.colour ||
+        source.colourName ||
+        source.variantColor;
+      if (color !== undefined && color !== null) {
+        details.colorName = String(color);
+      }
+    }
+
+    if (!details.size) {
+      const size = source.size || source.variantSize;
+      if (size !== undefined && size !== null) {
+        details.size = String(size);
+      }
+    }
+  };
+
+  applySource(event);
+  applySource(event.pathParameters);
+  applySource(event.queryStringParameters);
 
   if (event.body) {
     try {
       const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
-      if (body?.variantId) {
-        return String(body.variantId);
-      }
+      applySource(body);
     } catch (err) {
       warn('Failed to parse event body JSON');
     }
   }
 
-  throw new Error('Variant ID was not provided');
+  if (!details.variantId && !(details.productId && details.colorName && details.size)) {
+    throw new Error('Variant ID or product lookup details were not provided');
+  }
+
+  return details;
 };
 
 const ensureEnvVars = () => {
@@ -143,27 +188,80 @@ const mapMockupsToStyles = (styles, mockups = []) => {
 
 exports.handler = async (event) => {
   try {
-    const variantId = parseEvent(event);
-    info(`Processing Printful variant ${variantId}`);
+    const { variantId: parsedVariantId, productId, colorName, size } = parseEvent(event);
+
+    if (parsedVariantId) {
+      info(`Processing Printful variant ${parsedVariantId}`);
+    } else {
+      info(
+        `Processing Printful variant lookup for product ${productId} (color=${colorName}, size=${size})`
+      );
+    }
     const { apiKey, bucket } = ensureEnvVars();
 
     const client = new PrintfulClient({ apiKey, rateLimitMs: RATE_LIMIT_MS });
     const uploader = new S3Uploader({ bucket });
 
     let variantResponse;
-    try {
-      variantResponse = await client.getCatalogVariant(variantId);
-    } catch (err) {
-      if (err?.response?.status === 404) {
-        info(`Catalog variant ${variantId} not found, attempting store variant lookup`);
-        variantResponse = await client.getStoreVariant(variantId);
-      } else {
+    let resolvedVariantId = parsedVariantId;
+
+    const fetchVariantById = async (id) => {
+      if (!id) {
+        return null;
+      }
+
+      try {
+        return await client.getCatalogVariant(id);
+      } catch (err) {
+        if (err?.response?.status === 404) {
+          info(`Catalog variant ${id} not found, attempting store variant lookup`);
+          try {
+            return await client.getStoreVariant(id);
+          } catch (storeErr) {
+            if (storeErr?.response?.status === 404) {
+              info(`Store variant ${id} not found`);
+              return null;
+            }
+            throw storeErr;
+          }
+        }
         throw err;
       }
+    };
+
+    if (resolvedVariantId) {
+      variantResponse = await fetchVariantById(resolvedVariantId);
+    }
+
+    if (!variantResponse && productId && colorName && size) {
+      info(
+        `Attempting catalog variant resolution for product ${productId} color "${colorName}" size "${size}"`
+      );
+      const lookup = await findCatalogVariantByAttributes({
+        client,
+        productId,
+        colorName,
+        size
+      });
+      resolvedVariantId = String(lookup.catalogVariantId);
+      variantResponse = await fetchVariantById(resolvedVariantId);
+      if (!variantResponse) {
+        throw new Error(
+          `Variant ${resolvedVariantId} derived from product ${productId} could not be retrieved`
+        );
+      }
+    }
+
+    if (!variantResponse) {
+      throw new Error(
+        `Could not resolve Printful variant ${parsedVariantId || ''}`.trim()
+      );
     }
 
     const variant = parseVariantResponse(variantResponse);
     debug('Variant payload parsed', variant);
+
+    const variantId = String(variant.variantId);
 
     if (!variant.productId) {
       throw new Error(`Could not resolve product ID for variant ${variantId}`);
