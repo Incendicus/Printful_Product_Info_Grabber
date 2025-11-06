@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { parseLegacyVariantResponse } = require('../src/printfulService');
+const { parseLegacyVariantResponse, parseVariantResponse } = require('../src/printfulService');
 
 test('parseLegacyVariantResponse extracts catalog data', () => {
   const payload = {
@@ -47,4 +47,66 @@ test('parseLegacyVariantResponse tolerates missing fields', () => {
     colorName: undefined,
     size: 'M'
   });
+});
+
+test('parseVariantResponse returns catalog product id from v2 payload', () => {
+  const payload = {
+    data: {
+      id: 4016,
+      catalog_product_id: 71,
+      name: 'Example Item',
+      color: 'Black',
+      size: 'S'
+    }
+  };
+
+  const details = parseVariantResponse(payload);
+
+  assert.strictEqual(details.variantId, 4016);
+  assert.strictEqual(details.productId, 71);
+  assert.deepStrictEqual(details.variant, payload.data);
+  assert.deepStrictEqual(details.product, {});
+});
+
+test('parseVariantResponse prefers nested product data when present', () => {
+  const payload = {
+    data: {
+      id: '999',
+      sync_product_id: 1234,
+      product: {
+        id: 5678,
+        title: 'Store listing title'
+      }
+    }
+  };
+
+  const details = parseVariantResponse(payload);
+
+  assert.strictEqual(details.variantId, '999');
+  assert.strictEqual(details.productId, 5678);
+  assert.deepStrictEqual(details.product, payload.data.product);
+});
+
+test('parseVariantResponse throws when payload is malformed', () => {
+  assert.throws(() => parseVariantResponse({}), /missing "data" payload/);
+
+  assert.throws(
+    () =>
+      parseVariantResponse({
+        data: {
+          catalog_product_id: 77
+        }
+      }),
+    /missing variant identifier/
+  );
+
+  assert.throws(
+    () =>
+      parseVariantResponse({
+        data: {
+          id: '123'
+        }
+      }),
+    /missing product identifier/
+  );
 });
