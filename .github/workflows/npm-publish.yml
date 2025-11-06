@@ -28,6 +28,8 @@ jobs:
       - name: Install deps and optional build
         working-directory: ${{ env.APP_DIR }}
         shell: bash
+        env:
+          CI: "true"
         run: |
           set -euo pipefail
           if [ -f package-lock.json ]; then
@@ -70,13 +72,13 @@ jobs:
 
           # Install production deps inside the staged folder
           if [ -f package/package.json ]; then
-            pushd package >/dev/null
-            if [ -f package-lock.json ]; then
-              npm ci --omit=dev --no-audit --no-fund
-            else
-              npm install --omit=dev --no-audit --no-fund
-            fi
-            popd >/dev/null
+            ( cd package
+              if [ -f package-lock.json ]; then
+                npm ci --omit=dev --no-audit --no-fund
+              else
+                npm install --omit=dev --no-audit --no-fund
+              fi
+            )
           fi
 
           echo "Top-level staged files:"
@@ -85,13 +87,17 @@ jobs:
       - name: Create Lambda zip (flat root)
         working-directory: ${{ env.APP_DIR }}/package
         shell: bash
+        env:
+          ZIP_NAME: ${{ env.ZIP_NAME }}
         run: |
           set -euo pipefail
           # Zip the CONTENTS so the root of the zip is files, not a folder
           zip -r "../${ZIP_NAME}" . -q
+          echo "Created ../${ZIP_NAME}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ZIP_NAME }}
-          path: ${{ env.APP_DIR }}/${{ env.ZIP_NA
+          path: ${{ env.APP_DIR }}/${{ env.ZIP_NAME }}
+          if-no-files-found: error
