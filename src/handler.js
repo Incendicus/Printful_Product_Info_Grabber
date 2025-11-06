@@ -4,8 +4,7 @@ const {
   enrichWithPlacements,
   parseVariantResponse,
   pollMockupTask,
-  findCatalogVariantByAttributes,
-  parseLegacyVariantResponse
+  findCatalogVariantByAttributes
 } = require('./printfulService');
 const S3Uploader = require('./s3Uploader');
 
@@ -191,12 +190,6 @@ exports.handler = async (event) => {
   try {
     const { variantId: parsedVariantId, productId, colorName, size } = parseEvent(event);
 
-    const fallbackAttributes = {
-      productId: productId ? String(productId) : null,
-      colorName: colorName || null,
-      size: size || null
-    };
-
     if (parsedVariantId) {
       info(`Processing Printful variant ${parsedVariantId}`);
     } else {
@@ -210,8 +203,7 @@ exports.handler = async (event) => {
     const uploader = new S3Uploader({ bucket });
 
     let variantResponse;
-    let resolvedVariantId = parsedVariantId ? String(parsedVariantId) : null;
-    let legacyDetails = null;
+    let resolvedVariantId = parsedVariantId;
 
     const fetchVariantById = async (id) => {
       if (!id) {
@@ -241,66 +233,21 @@ exports.handler = async (event) => {
       variantResponse = await fetchVariantById(resolvedVariantId);
     }
 
-    if (!variantResponse && resolvedVariantId) {
-      info(`Attempting legacy variant lookup for ${resolvedVariantId}`);
-      try {
-        const legacyResponse = await client.getLegacyVariant(resolvedVariantId);
-        legacyDetails = parseLegacyVariantResponse(legacyResponse);
-
-        if (legacyDetails) {
-          if (legacyDetails.catalogVariantId) {
-            const mappedVariantId = String(legacyDetails.catalogVariantId);
-            info(`Legacy variant ${resolvedVariantId} maps to catalog variant ${mappedVariantId}`);
-            resolvedVariantId = mappedVariantId;
-            variantResponse = await fetchVariantById(resolvedVariantId);
-          }
-
-          if (!fallbackAttributes.productId && legacyDetails.productId) {
-            fallbackAttributes.productId = String(legacyDetails.productId);
-          }
-          if (!fallbackAttributes.colorName && legacyDetails.colorName) {
-            fallbackAttributes.colorName = legacyDetails.colorName;
-          }
-          if (!fallbackAttributes.size && legacyDetails.size) {
-            fallbackAttributes.size = legacyDetails.size;
-          }
-        } else {
-          info(`Legacy lookup for variant ${resolvedVariantId} returned no usable mapping data`);
-        }
-      } catch (legacyErr) {
-        if (legacyErr?.response?.status === 404) {
-          info(`Legacy variant ${resolvedVariantId} not found`);
-        } else {
-          throw legacyErr;
-        }
-      }
-    }
-
-    if (variantResponse && !fallbackAttributes.productId && legacyDetails?.productId) {
-      fallbackAttributes.productId = String(legacyDetails.productId);
-    }
-
-    const canUseAttributeLookup =
-      !variantResponse &&
-      fallbackAttributes.productId &&
-      fallbackAttributes.colorName &&
-      fallbackAttributes.size;
-
-    if (canUseAttributeLookup) {
+    if (!variantResponse && productId && colorName && size) {
       info(
-        `Attempting catalog variant resolution for product ${fallbackAttributes.productId} color "${fallbackAttributes.colorName}" size "${fallbackAttributes.size}"`
+        `Attempting catalog variant resolution for product ${productId} color "${colorName}" size "${size}"`
       );
       const lookup = await findCatalogVariantByAttributes({
         client,
-        productId: fallbackAttributes.productId,
-        colorName: fallbackAttributes.colorName,
-        size: fallbackAttributes.size
+        productId,
+        colorName,
+        size
       });
       resolvedVariantId = String(lookup.catalogVariantId);
       variantResponse = await fetchVariantById(resolvedVariantId);
       if (!variantResponse) {
         throw new Error(
-          `Variant ${resolvedVariantId} derived from product ${fallbackAttributes.productId} could not be retrieved`
+          `Variant ${resolvedVariantId} derived from product ${productId} could not be retrieved`
         );
       }
     }

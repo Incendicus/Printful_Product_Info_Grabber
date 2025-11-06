@@ -226,73 +226,6 @@ const findCatalogVariantByAttributes = async ({ client, productId, colorName, si
   };
 };
 
-const parseLegacyVariantResponse = (legacyResponse) => {
-  if (!legacyResponse || typeof legacyResponse !== 'object') {
-    return null;
-  }
-
-  const payload = legacyResponse.result || legacyResponse.data || legacyResponse;
-  if (!payload || typeof payload !== 'object') {
-    return null;
-  }
-
-  const legacyVariant =
-    payload.variant || payload.sync_variant || payload.syncVariant || payload.result?.variant;
-  const syncVariant = payload.sync_variant || payload.syncVariant;
-  const product = payload.product || payload.sync_product || payload.syncProduct;
-
-  const catalogVariantId = toNumberOrNull(
-    firstDefined(
-      legacyVariant?.catalog_variant_id,
-      legacyVariant?.catalogVariantId,
-      syncVariant?.catalog_variant_id,
-      syncVariant?.catalogVariantId
-    )
-  );
-
-  const productId = toNumberOrNull(
-    firstDefined(
-      legacyVariant?.catalog_product_id,
-      legacyVariant?.product_id,
-      product?.catalog_product_id,
-      product?.product_id,
-      product?.id,
-      syncVariant?.catalog_product_id
-    )
-  );
-
-  const colorName = firstDefined(
-    legacyVariant?.color,
-    legacyVariant?.color_name,
-    syncVariant?.color,
-    product?.color
-  );
-
-  const size = firstDefined(legacyVariant?.size, syncVariant?.size);
-
-  const legacyVariantId = toNumberOrNull(
-    firstDefined(legacyVariant?.id, legacyResponse?.id, payload?.id)
-  );
-
-  if (
-    catalogVariantId === null &&
-    productId === null &&
-    !colorName &&
-    !size &&
-    legacyVariantId === null
-  ) {
-    return null;
-  }
-
-  return {
-    legacyVariantId,
-    catalogVariantId,
-    productId,
-    colorName,
-    size
-  };
-};
-
 const parseVariantResponse = (variantResponse) => {
   const variant = variantResponse?.result || variantResponse?.data || variantResponse;
   if (!variant) {
@@ -349,6 +282,5 @@ module.exports = {
   enrichWithPlacements,
   parseVariantResponse,
   pollMockupTask,
-  findCatalogVariantByAttributes,
-  parseLegacyVariantResponse
+  findCatalogVariantByAttributes
 };
