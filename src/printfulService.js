@@ -77,6 +77,8 @@ const parseLegacyVariantResponse = (legacyResponse) => {
   };
 };
 
+const toArray = (value) => (Array.isArray(value) ? value : []);
+
 const flattenPlacements = (stylePlacements = [], placementLookup = {}) => {
   if (!Array.isArray(stylePlacements) || stylePlacements.length === 0) {
     return [];
@@ -105,7 +107,21 @@ const normalizeTemplate = ({ template, placementLookup }) => {
   const type = template.type || template.product_type || template.template_type || 'style';
   const color = template.color || template.variant_color || template.options?.color;
   const placements = flattenPlacements(template.placements || template.printfiles, placementLookup);
-  const preview = template.preview || template.preview_url || template.image || template.template_image || template.thumbnail;
+  const preview =
+    template.preview ||
+    template.preview_url ||
+    template.image ||
+    template.template_image ||
+    template.thumbnail ||
+    template.image_url ||
+    template.background_url;
+  const availableVariantIds = toArray(
+    template.available_variant_ids ||
+      template.availableVariantIds ||
+      template.available_variants ||
+      template.variant_ids ||
+      template.variants
+  ).map((id) => String(id));
 
   return {
     styleId,
@@ -114,6 +130,7 @@ const normalizeTemplate = ({ template, placementLookup }) => {
     color,
     placements,
     previewUrl: preview,
+    availableVariantIds,
     raw: template
   };
 };
@@ -136,18 +153,97 @@ const buildPlacementLookup = (printfiles) => {
   }, {});
 };
 
-const enrichWithPlacements = (templateResponse, printfilesResponse) => {
-  const templates = templateResponse?.result?.templates || templateResponse?.result?.styles || templateResponse?.result || [];
-  const placementLookup = buildPlacementLookup(printfilesResponse);
+const buildTemplateAugmentations = (templateResponse) => {
+  const result = templateResponse?.result || {};
+  const templateCandidates = [
+    toArray(result.templates),
+    toArray(result.styles),
+    toArray(result.data),
+    toArray(templateResponse?.templates),
+    toArray(templateResponse?.data),
+    toArray(templateResponse)
+  ];
+  const templates = templateCandidates.find((candidate) => candidate.length) || [];
 
-  info(`Found ${Array.isArray(templates) ? templates.length : 0} mockup templates from Printful`);
+  const variantMapping = toArray(result.variant_mapping);
 
-  return (Array.isArray(templates) ? templates : [])
-    .map((template) => normalizeTemplate({ template, placementLookup }))
-    .filter((template) => template.styleId);
+  const templateVariants = new Map();
+  const templatePlacements = new Map();
+
+  if (variantMapping.length) {
+    variantMapping.forEach((mapping) => {
+      const variantId =
+        mapping?.variant_id !== undefined && mapping?.variant_id !== null
+          ? String(mapping.variant_id)
+          : null;
+      toArray(mapping?.templates).forEach((entry) => {
+        const templateId = entry?.template_id || entry?.id;
+        if (!templateId) {
+          return;
+        }
+        const key = String(templateId);
+        if (variantId) {
+          if (!templateVariants.has(key)) {
+            templateVariants.set(key, new Set());
+          }
+          templateVariants.get(key).add(variantId);
+        }
+        if (entry?.placement) {
+          if (!templatePlacements.has(key)) {
+            templatePlacements.set(key, new Set());
+          }
+          templatePlacements.get(key).add(entry.placement);
+        }
+      });
+    });
+  }
+
+  let templatePayloads = templates;
+  if (!templatePayloads.length && variantMapping.length) {
+    templatePayloads = variantMapping.flatMap((mapping) =>
+      toArray(mapping?.templates).map((entry) => ({
+        ...entry,
+        template_id: entry.template_id || entry.id
+      }))
+    );
+  }
+
+  return {
+    templatePayloads,
+    templateVariants,
+    templatePlacements
+  };
 };
 
-const toArray = (value) => (Array.isArray(value) ? value : []);
+const enrichWithPlacements = (templateResponse, printfilesResponse) => {
+  const { templatePayloads, templateVariants, templatePlacements } = buildTemplateAugmentations(templateResponse);
+  const placementLookup = buildPlacementLookup(printfilesResponse);
+
+  info(`Found ${Array.isArray(templatePayloads) ? templatePayloads.length : 0} mockup templates from Printful`);
+
+  return (Array.isArray(templatePayloads) ? templatePayloads : [])
+    .map((template) => {
+      const normalized = normalizeTemplate({ template, placementLookup });
+      const key = String(normalized.styleId);
+      const mappedPlacements = templatePlacements.get(key);
+      const mappedVariants = templateVariants.get(key);
+
+      return {
+        ...normalized,
+        placements: normalized.placements.length
+          ? normalized.placements
+          : mappedPlacements
+            ? Array.from(mappedPlacements)
+            : normalized.placements,
+        availableVariantIds: normalized.availableVariantIds.length
+          ? normalized.availableVariantIds
+          : mappedVariants
+            ? Array.from(mappedVariants)
+            : normalized.availableVariantIds
+      };
+    })
+    .filter((template) => template.styleId);
+};
 
 const extractCatalogVariants = (response) => {
   if (!response || typeof response !== 'object') {
@@ -290,7 +386,13 @@ const findCatalogVariantByAttributes = async ({ client, productId, colorName, si
 };
 
 const parseVariantResponse = (variantResponse) => {
-  const variant = variantResponse?.data;
+  const candidate =
+    variantResponse?.data ||
+    variantResponse?.result?.variant ||
+    variantResponse?.result ||
+    variantResponse?.variant ||
+    variantResponse;
+  const variant = candidate?.data || candidate;
 
   if (!variant || typeof variant !== 'object') {
     throw new Error('Variant response missing "data" payload');

@@ -1,7 +1,56 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { parseLegacyVariantResponse, parseVariantResponse } = require('../src/printfulService');
+const { parseLegacyVariantResponse, parseVariantResponse, enrichWithPlacements } = require('../src/printfulService');
+
+test('enrichWithPlacements preserves available variant ids as strings', () => {
+  const templates = {
+    result: {
+      templates: [
+        {
+          style_id: 1,
+          title: 'Front',
+          available_variant_ids: [4016, '7777'],
+          preview_url: 'https://example.com/front.png'
+        }
+      ]
+    }
+  };
+
+  const styles = enrichWithPlacements(templates, { result: [] });
+  assert.strictEqual(styles.length, 1);
+  assert.deepStrictEqual(styles[0].availableVariantIds, ['4016', '7777']);
+});
+
+test('enrichWithPlacements backfills variant mapping data', () => {
+  const templates = {
+    result: {
+      variant_mapping: [
+        {
+          variant_id: 4016,
+          templates: [
+            {
+              placement: 'front',
+              template_id: 123
+            }
+          ]
+        }
+      ],
+      templates: [
+        {
+          template_id: 123,
+          image_url: 'https://example.com/front.png'
+        }
+      ]
+    }
+  };
+
+  const styles = enrichWithPlacements(templates, { result: [] });
+  assert.strictEqual(styles.length, 1);
+  assert.deepStrictEqual(styles[0].availableVariantIds, ['4016']);
+  assert.deepStrictEqual(styles[0].placements, ['front']);
+  assert.strictEqual(styles[0].previewUrl, 'https://example.com/front.png');
+});
 
 test('parseLegacyVariantResponse extracts catalog data', () => {
   const payload = {
@@ -87,8 +136,26 @@ test('parseVariantResponse prefers nested product data when present', () => {
   assert.deepStrictEqual(details.product, payload.data.product);
 });
 
+test('parseVariantResponse supports result payloads', () => {
+  const payload = {
+    result: {
+      variant: {
+        id: 888,
+        catalog_product_id: 71
+      },
+      product: {
+        id: 71
+      }
+    }
+  };
+
+  const details = parseVariantResponse(payload);
+  assert.strictEqual(details.variantId, 888);
+  assert.strictEqual(details.productId, 71);
+});
+
 test('parseVariantResponse throws when payload is malformed', () => {
-  assert.throws(() => parseVariantResponse({}), /missing "data" payload/);
+  assert.throws(() => parseVariantResponse(null), /missing "data" payload/);
 
   assert.throws(
     () =>

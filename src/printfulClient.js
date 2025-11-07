@@ -82,16 +82,20 @@ class PrintfulClient {
     return this.request({ method: 'GET', path: `/v1/products/variant/${variantId}` });
   }
 
-  getMockupTemplates(productId) {
-    return this.request({ method: 'GET', path: `/v2/mockup-generator/templates/${productId}` });
+  getMockupTemplates(productId, params) {
+    return this.request({
+      method: 'GET',
+      path: `/mockup-generator/templates/${productId}`,
+      params
+    });
   }
 
-  getMockupPrintfiles(productId) {
-    return this.request({ method: 'GET', path: `/v2/mockup-generator/printfiles/${productId}` });
-  }
-
-  getMockupStyles(productId) {
-    return this.request({ method: 'GET', path: `/v2/mockup-generator/styles/${productId}` });
+  getMockupPrintfiles(productId, params) {
+    return this.request({
+      method: 'GET',
+      path: `/mockup-generator/printfiles/${productId}`,
+      params
+    });
   }
 
   listCatalogVariants(productId, { limit = 100, offset = 0 } = {}) {

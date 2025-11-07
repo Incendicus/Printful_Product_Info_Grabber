@@ -1,14 +1,10 @@
 const PrintfulClient = require('./printfulClient');
 const { info, warn, error, debug } = require('./logger');
-const {
-  enrichWithPlacements,
-  parseVariantResponse,
-  pollMockupTask,
-  findCatalogVariantByAttributes
-} = require('./printfulService');
+const { enrichWithPlacements, parseVariantResponse, findCatalogVariantByAttributes } = require('./printfulService');
 const S3Uploader = require('./s3Uploader');
 
 const RATE_LIMIT_MS = 3_000;
+const MOCKUP_TECHNIQUE = 'DTG';
 
 const parseEvent = (event) => {
   if (!event) {
@@ -84,6 +80,7 @@ const parseEvent = (event) => {
 const ensureEnvVars = () => {
   const apiKey = process.env.PRINTFUL_API_KEY;
   const bucket = process.env.PUBLIC_IMAGE_BUCKET;
+  const storeId = process.env.PF_STORE_ID;
 
   if (!apiKey) {
     throw new Error('PRINTFUL_API_KEY environment variable is required');
@@ -93,7 +90,11 @@ const ensureEnvVars = () => {
     throw new Error('PUBLIC_IMAGE_BUCKET environment variable is required');
   }
 
-  return { apiKey, bucket };
+  if (!storeId) {
+    throw new Error('PF_STORE_ID environment variable is required');
+  }
+
+  return { apiKey, bucket, storeId };
 };
 
 const collectMockupImages = async ({ client, uploader, variant, styles }) => {
@@ -121,70 +122,98 @@ const collectMockupImages = async ({ client, uploader, variant, styles }) => {
   return uploads;
 };
 
-const fetchMockupStyles = async ({ client, productId }) => {
-  const templatesResponse = await client.getMockupTemplates(productId);
-  const printfilesResponse = await client.getMockupPrintfiles(productId);
+const fetchMockupStyles = async ({ client, productId, variantId, storeId }) => {
+  const templateParams = { technique: MOCKUP_TECHNIQUE, store_id: storeId };
+  if (variantId) {
+    templateParams.variant_ids = variantId;
+  }
+
+  let templatesResponse;
+  try {
+    templatesResponse = await client.getMockupTemplates(productId, templateParams);
+  } catch (err) {
+    const shouldRetryWithoutVariant =
+      variantId && err?.response?.status === 404 && templateParams.variant_ids;
+    if (!shouldRetryWithoutVariant) {
+      throw err;
+    }
+    info(
+      `Templates endpoint rejected variant filter for product ${productId}, retrying without variant_ids`
+    );
+    const fallbackParams = { ...templateParams };
+    delete fallbackParams.variant_ids;
+    templatesResponse = await client.getMockupTemplates(productId, fallbackParams);
+  }
+
+  const printfilesResponse = await client.getMockupPrintfiles(productId, {
+    technique: MOCKUP_TECHNIQUE,
+    store_id: storeId
+  });
 
   const styles = enrichWithPlacements(templatesResponse, printfilesResponse);
 
   if (!styles.length) {
-    info(`No mockup styles found for product ${productId} with template endpoint, attempting fallback`);
-    const fallbackResponse = await client.getMockupStyles(productId);
-    return enrichWithPlacements(fallbackResponse, printfilesResponse);
+    info(`No mockup styles found for product ${productId} using technique ${MOCKUP_TECHNIQUE}`);
   }
 
   return styles;
 };
 
-const createBlankMockupTask = async ({ client, productId, variantId }) => {
-  const payload = {
-    variant_ids: [variantId],
-    format: 'png',
-    files: [],
-    options: {
-      background: 'FFFFFF'
-    }
-  };
+const normalizeColor = (value) => String(value || '').trim().toLowerCase();
 
-  const response = await client.createMockupTask(productId, payload);
-  const taskKey = response?.result?.task_key || response?.result?.task_id || response?.task_key;
-
-  if (!taskKey) {
-    throw new Error('Failed to start Printful mockup task');
-  }
-
-  const task = await pollMockupTask({ client, taskKey });
-  const mockups = task?.mockups || task?.result?.mockups || [];
-
-  return mockups;
-};
-
-const mapMockupsToStyles = (styles, mockups = []) => {
-  if (!Array.isArray(mockups) || mockups.length === 0) {
-    return styles;
-  }
-
-  const mockupMap = new Map();
-  for (const mockup of mockups) {
-    const styleId = mockup.style_id || mockup.template_id || mockup.id;
-    if (!styleId) {
-      continue;
-    }
-    mockupMap.set(String(styleId), mockup);
-  }
-
+const annotateStylesForVariant = ({ styles, variantId }) => {
+  const normalizedVariantId = variantId ? String(variantId) : null;
   return styles.map((style) => {
-    const match = mockupMap.get(String(style.styleId));
-    if (!match) {
-      return style;
-    }
+    const availableForVariant = normalizedVariantId
+      ? style.availableVariantIds?.some((id) => String(id) === normalizedVariantId)
+      : false;
     return {
       ...style,
-      previewUrl: match.mockup_url || match.url || match.file_url || style.previewUrl,
-      placements: style.placements.length ? style.placements : (match.placements || []).map((p) => p.placement || p.name)
+      availableForVariant
     };
   });
 };
+
+const filterStylesForVariant = ({
+  styles,
+  variantId,
+  variantColor,
+  includeProductWideList,
+  ignoreColor
+}) => {
+  const annotated = annotateStylesForVariant({ styles, variantId });
+  const normalizedColor = normalizeColor(variantColor);
+
+  return annotated.filter((style) => {
+    const colorMatches =
+      ignoreColor ||
+      !normalizedColor ||
+      (style.color ? normalizeColor(style.color) === normalizedColor : false);
+
+    if (!colorMatches) {
+      return false;
+    }
+
+    if (style.availableForVariant) {
+      return true;
+    }
+
+    return includeProductWideList;
+  });
+};
+
+const buildVariantSummary = ({ variant, productId }) => {
+  const placements = Array.isArray(variant.placement_dimensions) ? variant.placement_dimensions : [];
+  return {
+    catalogProductId: productId,
+    color: variant.color || variant.color_name,
+    size: variant.size || variant.size_name,
+    image: variant.image,
+    availablePlacements: placements
+  };
+};
+
+exports.filterStylesForVariant = filterStylesForVariant;
 
 exports.handler = async (event) => {
   try {
@@ -197,7 +226,7 @@ exports.handler = async (event) => {
         `Processing Printful variant lookup for product ${productId} (color=${colorName}, size=${size})`
       );
     }
-    const { apiKey, bucket } = ensureEnvVars();
+    const { apiKey, bucket, storeId } = ensureEnvVars();
 
     const client = new PrintfulClient({ apiKey, rateLimitMs: RATE_LIMIT_MS });
     const uploader = new S3Uploader({ bucket });
@@ -267,36 +296,43 @@ exports.handler = async (event) => {
       throw new Error(`Could not resolve product ID for variant ${variantId}`);
     }
 
-    const styles = await fetchMockupStyles({ client, productId: variant.productId });
+    const includeProductWideList = process.env.PRODUCT_WIDE_LIST === 'true';
+    const ignoreColor = process.env.IGNORE_COLOR === 'true';
+    const styles = await fetchMockupStyles({
+      client,
+      productId: variant.productId,
+      variantId,
+      storeId
+    });
 
-    let stylesWithMockups = styles;
-    const missingPreview = styles.every((style) => !style.previewUrl);
-    if (missingPreview) {
-      info('No preview URLs returned from template endpoints, requesting blank mockup task');
-      const mockups = await createBlankMockupTask({
-        client,
-        productId: variant.productId,
-        variantId: variant.variantId
-      });
-      stylesWithMockups = mapMockupsToStyles(styles, mockups);
+    const filteredStyles = filterStylesForVariant({
+      styles,
+      variantId,
+      variantColor: variant.variant?.color || variant.variant?.color_name,
+      includeProductWideList,
+      ignoreColor
+    });
+
+    if (!filteredStyles.length) {
+      throw new Error(
+        `No mockup styles matched variant ${variantId} (color=${variant.variant?.color || 'unknown'}, PRODUCT_WIDE_LIST=${includeProductWideList})`
+      );
     }
 
-    const uploads = await collectMockupImages({ client, uploader, variant, styles: stylesWithMockups });
+    const uploads = await collectMockupImages({ client, uploader, variant, styles: filteredStyles });
 
     const response = {
-      variant: {
-        id: variant.variantId,
-        productId: variant.productId,
-        name: variant.variant?.name,
-        color: variant.variant?.color,
-        size: variant.variant?.size
-      },
+      variant: buildVariantSummary({
+        variant: variant.variant,
+        productId: variant.productId
+      }),
       styles: uploads.map((style) => ({
         styleId: style.styleId,
         title: style.title,
         type: style.type,
         color: style.color,
         placements: style.placements,
+        availableForVariant: style.availableForVariant,
         s3Key: style.s3.key,
         s3Url: style.s3.url,
         contentType: style.s3.contentType
